@@ -55,7 +55,7 @@ func (ts *tcpTestServer) stop() {
 	ts.l.Close()
 }
 
-func TestTcpConnectScan(t *testing.T) {
+func TestConnectScan(t *testing.T) {
 	ipnet, err := myIPNet()
 	handleError(err, t)
 
@@ -81,7 +81,7 @@ func TestTcpConnectScan(t *testing.T) {
 	for i, tc := range portTests {
 		t.Logf("Test case %v: %v", i, tc)
 		pc := newPortChecker(net.ParseIP(tc.ip), tc.port)
-		ps, err := pc.TcpConnectScan(500 * time.Millisecond)
+		ps, err := pc.ConnectScan(500 * time.Millisecond)
 		handleError(err, t)
 		if tc.out != ps {
 			t.Errorf("Result for %v doesn't match, expected %v, got %v", i, tc.out, ps)

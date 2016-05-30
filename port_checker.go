@@ -7,16 +7,17 @@ import (
 	"time"
 )
 
+// PortStatus - Type for describing Status for a port
 type PortStatus int
 
 const (
-	// Port is open
+	// PSOpen - Port is open
 	PSOpen PortStatus = iota
-	// Port is closed
+	// PSClose - Port is closed
 	PSClose
-	// Port timed out
+	// PSTimeout - Port timed out
 	PSTimeout
-	// Other errors when trying connect
+	// PSError - Other errors when trying connect
 	PSError
 )
 
@@ -35,12 +36,12 @@ func (ps PortStatus) String() string {
 
 // private type for aggregating port checking functinalities
 type portChecker struct {
-	hostIp  net.IP
+	hostIP  net.IP
 	port    string
 	address string
 }
 
-// Error thrown when a non-loopback interface cannot be found
+// NoNetworkError - thrown when a non-loopback interface cannot be found
 type NoNetworkError struct {
 	What string
 }
@@ -57,7 +58,7 @@ func newPortChecker(ip net.IP, port string) *portChecker {
 
 // Start a TCP connect scan for the current port, consider it failed if timeout
 // is exceeded
-func (pc *portChecker) TcpConnectScan(timeout time.Duration) (PortStatus, error) {
+func (pc *portChecker) ConnectScan(timeout time.Duration) (PortStatus, error) {
 	conn, err := net.DialTimeout("tcp", pc.address, timeout)
 	if err != nil {
 		if netError, ok := err.(net.Error); ok && netError.Timeout() {
@@ -84,6 +85,6 @@ func (pc *portChecker) TcpConnectScan(timeout time.Duration) (PortStatus, error)
 	return PSOpen, nil
 }
 
-func (*portChecker) TcpSynScan() {
+func (*portChecker) SynScan() {
 	// TODO
 }

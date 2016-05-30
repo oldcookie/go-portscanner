@@ -9,29 +9,30 @@ import (
 	"github.com/golang/glog"
 )
 
-// Used for specifying a port range
+// PortRange - Used for specifying a port range
 type PortRange struct {
 	Start, End int
 }
 
 var (
-	// Full port range
+	// AllPorts - Convinience var for full port range
 	AllPorts = PortRange{1, 65535}
 )
 
-// Type of scan
+// ScanType - Type of scan
 type ScanType int
 
 const (
-	// TCP Connect Scan
-	TCPConnectScan ScanType = iota
-	// TCP SYN Scan
-	TCPSynScan
+	// ConnectScan - TCP Connect Scan
+	ConnectScan ScanType = iota
+	// SynScan - TCP SYN Scan
+	SynScan
 )
 
+// Protocol - returns the protocol name in string format for a ScanType
 func (st ScanType) Protocol() string {
 	switch st {
-	case TCPConnectScan, TCPSynScan:
+	case ConnectScan, SynScan:
 		return "TCP"
 	default:
 		return "UDP"
@@ -40,17 +41,15 @@ func (st ScanType) Protocol() string {
 
 func (st ScanType) String() string {
 	switch st {
-	case TCPSynScan:
+	case SynScan:
 		return "SYN Scan(TCP)"
 	default:
 		return "Connect Scan(TCP)"
 	}
 }
 
-/*
-HostScanner, struct used to store information needed to scan a particular
-host
-*/
+// HostScanner - struct used to store information needed to scan a particular
+//  host
 type HostScanner struct {
 	Host    string
 	IP      net.IP
@@ -59,6 +58,7 @@ type HostScanner struct {
 	Timeout time.Duration
 }
 
+// HostPortStatus - Decriptor for the status of port on a particular host
 type HostPortStatus struct {
 	Host   string
 	Port   int
@@ -66,15 +66,12 @@ type HostPortStatus struct {
 	Status PortStatus
 }
 
-// Handler function type for callback used to handle results
+// ScanResultHandler - function type for callback used to handle results
 type ScanResultHandler func(*HostPortStatus)
 
-/*
-Create a new scanner for a host
-
-host - hostname/ip address
-portRange - range of ports to scan
-*/
+// NewHostScanner -  Create a new scanner for a host
+// host - hostname/ip address
+// portRange - range of ports to scan
 func NewHostScanner(host string, portRange PortRange) (*HostScanner, error) {
 	ip, err := net.LookupIP(host)
 	if err != nil {
@@ -118,17 +115,17 @@ func (hs *HostScanner) Scan(handler ScanResultHandler) {
 				wg.Done()
 			}()
 			pc := newPortChecker(hs.IP, strconv.Itoa(p))
-			if status, err := pc.TcpConnectScan(hs.Timeout); err != nil {
+			if status, err := pc.ConnectScan(hs.Timeout); err != nil {
 				glog.Errorf("Error encountered while scanning %v:%v - %v, ignoring", hs.Host, p, err)
 			} else {
-				handler(&HostPortStatus{hs.Host, p, TCPConnectScan, status})
+				handler(&HostPortStatus{hs.Host, p, ConnectScan, status})
 			}
 		}(p)
 	}
 	wg.Wait()
 }
 
-// Scan options
+// ScanOpts - struct for aggregating differen scan options
 type ScanOpts struct {
 	// Max number of concurrent requests
 	Concurrency int
@@ -138,15 +135,12 @@ type ScanOpts struct {
 	Range PortRange
 }
 
-/*
-Perform scan on a list of hosts.
-
-hosts - list of host to scan
-concurrency - number of simultaneous requests
-timeout - request timeout for Connect Scan
-hanlder - port scan result callback, result for each port scanned is
-passed back in the handler, note that handler can be called concurrently
-*/
+// ScanHosts - Perform scan on a list of hosts.
+// hosts - list of host to scan
+// concurrency - number of simultaneous requests
+// timeout - request timeout for Connect Scan
+// hanlder - port scan result callback, result for each port scanned is
+// passed back in the handler, note that handler can be called concurrently
 func ScanHosts(hosts []string, opts ScanOpts, handler ScanResultHandler) error {
 	gate := make(chan int, opts.Concurrency)
 	var scanners []*HostScanner

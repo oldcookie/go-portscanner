@@ -17,8 +17,8 @@ func makeTCPValidator(tc tcpScanTestCase, st ScanType, t *testing.T) ScanResultH
 	return func(hps *HostPortStatus) {
 		i := hps.Port - tc.ports.Start
 		if hps.Host != tc.host || hps.Scan != st || hps.Status != tc.status[i] {
-			t.Error("Results doesn't match (%v, %v, %v, %v)", hps.Host, hps.Port, hps.Scan, hps.Status)
-			t.Error("Expected (%v, %v, %v, %v)", tc.host, hps.Port, st, tc.status[i])
+			t.Errorf("Results doesn't match (%v, %v, %v, %v)", hps.Host, hps.Port, hps.Scan, hps.Status)
+			t.Errorf("Expected (%v, %v, %v, %v)", tc.host, hps.Port, st, tc.status[i])
 		}
 	}
 }
@@ -53,7 +53,7 @@ func TestHostTCPScan(t *testing.T) {
 			t.Error(err)
 		}
 		hs.Timeout = time.Millisecond * 200 // set timeout to lower than default
-		hs.Scan(makeTCPValidator(tc, TCPConnectScan, t))
+		hs.Scan(makeTCPValidator(tc, ConnectScan, t))
 	}
 }
 

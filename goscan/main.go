@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/oldcookie/portscanner"
+	"github.com/oldcookie/go-portscanner"
 )
 
 func init() {
@@ -91,7 +91,7 @@ func printReport(m resultsMap, portServiceMap map[string]string) {
 				}
 			}
 		}
-		fmt.Println("\n\n")
+		fmt.Print("\n\n")
 	}
 }
 

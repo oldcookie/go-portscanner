@@ -6,7 +6,7 @@ import (
 	"github.com/ziutek/utils/netaddr"
 )
 
-// Util function for expanding a CIDR into a list of IPs
+// ExpandCIDR - Util function for expanding a CIDR into a list of IPs
 func ExpandCIDR(cidr string) ([]string, error) {
 	ipFirst, ipnet, err := net.ParseCIDR(cidr)
 	if err != nil {
