@@ -2,6 +2,7 @@ package portscanner
 
 import (
 	"net"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -80,8 +81,10 @@ func TestConnectScan(t *testing.T) {
 
 	for i, tc := range portTests {
 		t.Logf("Test case %v: %v", i, tc)
-		pc := newPortChecker(net.ParseIP(tc.ip), tc.port)
-		ps, err := pc.ConnectScan(500 * time.Millisecond)
+		cs := newConnectScanner(net.ParseIP(tc.ip))
+		p, err := strconv.Atoi(tc.port)
+		handleError(err, t)
+		ps, err := cs.Scan(p, 500*time.Millisecond)
 		handleError(err, t)
 		if tc.out != ps {
 			t.Errorf("Result for %v doesn't match, expected %v, got %v", i, tc.out, ps)

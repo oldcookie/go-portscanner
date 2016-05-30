@@ -1,6 +1,7 @@
 package portscanner
 
 import (
+	"fmt"
 	"net"
 
 	"github.com/ziutek/utils/netaddr"
@@ -34,5 +35,5 @@ func myIPNet() (*net.IPNet, error) {
 			}
 		}
 	}
-	return nil, &NoNetworkError{"Cannot find a non-loopback interface"}
+	return nil, fmt.Errorf("Cannot find a non-loopback interface")
 }

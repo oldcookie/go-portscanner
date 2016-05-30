@@ -2,7 +2,6 @@ package portscanner
 
 import (
 	"net"
-	"strconv"
 	"sync"
 	"time"
 
@@ -48,16 +47,6 @@ func (st ScanType) String() string {
 	}
 }
 
-// HostScanner - struct used to store information needed to scan a particular
-//  host
-type HostScanner struct {
-	Host    string
-	IP      net.IP
-	Range   PortRange
-	Gate    chan int
-	Timeout time.Duration
-}
-
 // HostPortStatus - Decriptor for the status of port on a particular host
 type HostPortStatus struct {
 	Host   string
@@ -68,6 +57,17 @@ type HostPortStatus struct {
 
 // ScanResultHandler - function type for callback used to handle results
 type ScanResultHandler func(*HostPortStatus)
+
+// HostScanner - struct used to store information needed to scan a particular
+//  host
+type HostScanner struct {
+	Host     string
+	IP       net.IP
+	Range    PortRange
+	Gate     chan int
+	Timeout  time.Duration
+	scanners []scanner
+}
 
 // NewHostScanner -  Create a new scanner for a host
 // host - hostname/ip address
@@ -85,7 +85,11 @@ func NewHostScanner(host string, portRange PortRange) (*HostScanner, error) {
 	if portRange.End == 0 {
 		portRange.End = 65535
 	}
-	return &HostScanner{host, ip[0], portRange, make(chan int, 1), 5 * time.Second}, nil
+
+	var scns []scanner
+	// Can attach mutliple types of scans later on, just use connect scan for now
+	scns = append(scns, newConnectScanner(ip[0]))
+	return &HostScanner{host, ip[0], portRange, make(chan int, 1), 5 * time.Second, scns}, nil
 }
 
 /*
@@ -107,6 +111,7 @@ handler - callback for each port scanned
 func (hs *HostScanner) Scan(handler ScanResultHandler) {
 	var wg sync.WaitGroup
 	wg.Add(hs.Range.End - hs.Range.Start + 1)
+	cs := newConnectScanner(hs.IP)
 	for p := hs.Range.Start; p <= hs.Range.End; p++ {
 		hs.Gate <- 1
 		go func(p int) {
@@ -114,8 +119,7 @@ func (hs *HostScanner) Scan(handler ScanResultHandler) {
 				<-hs.Gate
 				wg.Done()
 			}()
-			pc := newPortChecker(hs.IP, strconv.Itoa(p))
-			if status, err := pc.ConnectScan(hs.Timeout); err != nil {
+			if status, err := cs.Scan(p, hs.Timeout); err != nil {
 				glog.Errorf("Error encountered while scanning %v:%v - %v, ignoring", hs.Host, p, err)
 			} else {
 				handler(&HostPortStatus{hs.Host, p, ConnectScan, status})
