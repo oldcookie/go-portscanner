@@ -10,18 +10,37 @@ import (
 type PortStatus int
 
 const (
+	// Port is open
 	PSOpen PortStatus = iota
+	// Port is closed
 	PSClose
+	// Port timed out
 	PSTimeout
+	// Other errors when trying connect
 	PSError
 )
 
+func (ps PortStatus) String() string {
+	switch ps {
+	case PSOpen:
+		return "Open"
+	case PSClose:
+		return "Closed"
+	case PSTimeout:
+		return "Timed Out"
+	default:
+		return "Error"
+	}
+}
+
+// private type for aggregating port checking functinalities
 type portChecker struct {
 	hostIp  net.IP
 	port    string
 	address string
 }
 
+// Error thrown when a non-loopback interface cannot be found
 type NoNetworkError struct {
 	What string
 }
@@ -30,11 +49,14 @@ func (e NoNetworkError) Error() string {
 	return fmt.Sprintf("%v", e.What)
 }
 
+// Create a new PortChecker
 func newPortChecker(ip net.IP, port string) *portChecker {
 	var address = net.JoinHostPort(ip.String(), port)
 	return &portChecker{ip, port, address}
 }
 
+// Start a TCP connect scan for the current port, consider it failed if timeout
+// is exceeded
 func (pc *portChecker) TcpConnectScan(timeout time.Duration) (PortStatus, error) {
 	conn, err := net.DialTimeout("tcp", pc.address, timeout)
 	if err != nil {
@@ -60,22 +82,6 @@ func (pc *portChecker) TcpConnectScan(timeout time.Duration) (PortStatus, error)
 	}
 	conn.Close()
 	return PSOpen, nil
-}
-
-func myIPNet() (*net.IPNet, error) {
-	addrs, err := net.InterfaceAddrs()
-	if err != nil {
-		return nil, err
-	}
-
-	for _, a := range addrs {
-		if ipnet, ok := a.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
-			if ipnet.IP.To4() != nil {
-				return ipnet, nil
-			}
-		}
-	}
-	return nil, &NoNetworkError{"Cannot find a non-loopback interface"}
 }
 
 func (*portChecker) TcpSynScan() {

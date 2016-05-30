@@ -14,11 +14,11 @@ type tcpScanTestCase struct {
 }
 
 func makeTCPValidator(tc tcpScanTestCase, st ScanType, t *testing.T) ScanResultHandler {
-	return func(host string, port int, scanType ScanType, status PortStatus) {
-		i := port - tc.ports.Start
-		if host != tc.host || scanType != st || status != tc.status[i] {
-			t.Error("Results doesn't match (%v, %v, %v, %v)", host, port, scanType, status)
-			t.Error("Expected (%v, %v, %v, %v)", tc.host, port, st, tc.status[i])
+	return func(hps *HostPortStatus) {
+		i := hps.Port - tc.ports.Start
+		if hps.Host != tc.host || hps.Scan != st || hps.Status != tc.status[i] {
+			t.Error("Results doesn't match (%v, %v, %v, %v)", hps.Host, hps.Port, hps.Scan, hps.Status)
+			t.Error("Expected (%v, %v, %v, %v)", tc.host, hps.Port, st, tc.status[i])
 		}
 	}
 }
@@ -62,9 +62,9 @@ func TestHostScannerConcurrency(t *testing.T) {
 		t.Skip("Skipping test in short mode")
 	}
 
-	var concurrency = 3
+	var concurrency = 10
 	var ch = make(chan int, 100)
-	var pr = PortRange{80, 90}
+	var pr = PortRange{80, 120}
 	var wg sync.WaitGroup
 	var quit = make(chan bool)
 	wg.Add(pr.End - pr.Start + 1)
@@ -90,11 +90,12 @@ func TestHostScannerConcurrency(t *testing.T) {
 		if max > concurrency || max <= 1 {
 			t.Errorf("Concurrency not working, max concurrency workers %v", max)
 		}
+		t.Logf("Final count- %v", current)
 		t.Logf("Max concurrency - %v", max)
 		quit <- true
 	}()
 
-	hs.Scan(func(host string, port int, scanType ScanType, status PortStatus) {
+	hs.Scan(func(*HostPortStatus) {
 		defer wg.Done()
 		ch <- 1
 		time.Sleep(200 * time.Millisecond)

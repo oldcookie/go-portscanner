@@ -1,0 +1,5 @@
+{ "22": "SSH",
+  "23": "Telnet",
+	"80": "HTTP",
+	"443": "HTTPS",
+	"2000": "Cisco SCCP"}
