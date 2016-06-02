@@ -25,7 +25,7 @@ func makeTCPValidator(tc tcpScanTestCase, st ScanType, t *testing.T) ScanResultH
 
 func TestHostTCPScan(t *testing.T) {
 	ts := createTCPTestServer("::1")
-	defer ts.stop()
+	defer ts.Stop()
 	tsPort, err := strconv.Atoi(ts.port)
 	if err != nil {
 		t.Error(err)
