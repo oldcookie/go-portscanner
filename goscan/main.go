@@ -7,7 +7,6 @@ import (
 	"io/ioutil"
 	"log"
 	"os"
-	"runtime/pprof"
 	"sort"
 	"strconv"
 	"strings"
@@ -115,7 +114,6 @@ func main() {
 	flag.IntVar(&opts.Range.Start, "port-range-start", 1, "Start of port range to scan")
 	flag.IntVar(&opts.Range.End, "port-range-end", 65535, "End of port range to scan(inclusive")
 	flag.StringVar(&servMapFile, "service-map", "", "file containing port to service mapping in JSON format")
-	var memprofile = flag.String("memprofile", "", "write memory profile to this file")
 	flag.Parse()
 	args := flag.Args()
 	opts.Timeout = time.Duration(cto) * time.Millisecond
@@ -170,14 +168,6 @@ func main() {
 	close(resultsCh)
 	<-done
 
-	if *memprofile != "" {
-		f, err := os.Create(*memprofile)
-		if err != nil {
-			log.Fatal(err)
-		}
-		pprof.WriteHeapProfile(f)
-		f.Close()
-	}
 	elapsed := time.Since(start)
 	fmt.Printf("%s took %s\n", os.Args[0], elapsed)
 
