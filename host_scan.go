@@ -133,8 +133,8 @@ func (hs *HostScanner) Scan(handler ScanResultHandler) {
 type ScanOpts struct {
 	// Max number of concurrent requests
 	Concurrency int
-	// Amount of time to wait for a connect request
-	ConnectTimeout time.Duration
+	// Amount of time to wait for a response
+	Timeout time.Duration
 	// Port Range to scan
 	Range PortRange
 }
@@ -154,7 +154,7 @@ func ScanHosts(hosts []string, opts ScanOpts, handler ScanResultHandler) error {
 	// create all hosts first so any errors will stop the execution before scans start
 	for _, h := range hosts {
 		if hs, err := NewHostScanner(h, opts.Range); err == nil {
-			hs.Timeout = opts.ConnectTimeout
+			hs.Timeout = opts.Timeout
 			scanners = append(scanners, hs)
 		} else {
 			return err

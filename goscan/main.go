@@ -108,7 +108,7 @@ func main() {
 	flag.StringVar(&servMapFile, "service-map", "", "file containing port to service mapping in JSON format")
 	flag.Parse()
 	args := flag.Args()
-	opts.ConnectTimeout = time.Duration(cto) * time.Millisecond
+	opts.Timeout = time.Duration(cto) * time.Millisecond
 
 	if len(args) <= 0 {
 		fmt.Fprintln(os.Stderr, "No hosts specified. For usage, use '-h' option")
@@ -146,7 +146,7 @@ func main() {
 		}
 	}
 	fmt.Printf("Scanning options {concurrency: %v, port range: [%v, %v], connect timeout: %v}",
-		opts.Concurrency, opts.Range.Start, opts.Range.End, opts.ConnectTimeout.String())
+		opts.Concurrency, opts.Range.Start, opts.Range.End, opts.Timeout.String())
 
 	// Start scanning
 	resultsCh := make(chan *portscanner.HostPortStatus, opts.Concurrency)

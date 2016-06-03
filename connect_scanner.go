@@ -37,10 +37,12 @@ func (ps PortStatus) String() string {
 
 // private interface for a scan job
 type scanner interface {
+	// duration is left in the Scan call so that we can potentially vary timeouts
+	// algorithmically for retries later on
 	Scan(port int, timeout time.Duration) (PortStatus, error)
 }
 
-// private type for aggregating port checking functinalities
+// private type for connect scan
 type connectScanner struct {
 	hostIP net.IP
 }
