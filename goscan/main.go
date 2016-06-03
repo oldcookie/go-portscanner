@@ -5,11 +5,16 @@ import (
 	"flag"
 	"fmt"
 	"io/ioutil"
+	"log"
 	"os"
+	"runtime/pprof"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+
+	"net/http"
+	_ "net/http/pprof"
 
 	"github.com/oldcookie/go-portscanner"
 )
@@ -100,12 +105,17 @@ func main() {
 	var cto int64
 	var servMapFile string
 
+	go func() {
+		log.Println(http.ListenAndServe("localhost:6060", nil))
+	}()
 	// flags definition
+	flag.BoolVar(&opts.SYNScan, "SYN", false, "Use SYN Scan instead of Connect scan for TCP check.(Super user only)")
 	flag.IntVar(&opts.Concurrency, "concurrency", 25, "Max number of concurrent requests")
 	flag.Int64Var(&cto, "connect-timeout", 2000, "Number of milliseconds to wait for TCP Connect Scan before timeout")
 	flag.IntVar(&opts.Range.Start, "port-range-start", 1, "Start of port range to scan")
 	flag.IntVar(&opts.Range.End, "port-range-end", 65535, "End of port range to scan(inclusive")
 	flag.StringVar(&servMapFile, "service-map", "", "file containing port to service mapping in JSON format")
+	var memprofile = flag.String("memprofile", "", "write memory profile to this file")
 	flag.Parse()
 	args := flag.Args()
 	opts.Timeout = time.Duration(cto) * time.Millisecond
@@ -145,10 +155,11 @@ func main() {
 			hosts = append(hosts, arg)
 		}
 	}
-	fmt.Printf("Scanning options {concurrency: %v, port range: [%v, %v], connect timeout: %v}",
-		opts.Concurrency, opts.Range.Start, opts.Range.End, opts.Timeout.String())
+	fmt.Printf("Scanning options {concurrency: %v, port range: [%v, %v], connect timeout: %v, SYN: %v}\n",
+		opts.Concurrency, opts.Range.Start, opts.Range.End, opts.Timeout.String(), opts.SYNScan)
 
 	// Start scanning
+	start := time.Now()
 	resultsCh := make(chan *portscanner.HostPortStatus, opts.Concurrency)
 	done := make(chan bool)
 	go aggregateOutput(resultsCh, done, portServiceMap)
@@ -158,4 +169,16 @@ func main() {
 		newPortResultHandler(resultsCh))
 	close(resultsCh)
 	<-done
+
+	if *memprofile != "" {
+		f, err := os.Create(*memprofile)
+		if err != nil {
+			log.Fatal(err)
+		}
+		pprof.WriteHeapProfile(f)
+		f.Close()
+	}
+	elapsed := time.Since(start)
+	fmt.Printf("%s took %s\n", os.Args[0], elapsed)
+
 }

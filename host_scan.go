@@ -61,12 +61,18 @@ type ScanResultHandler func(*HostPortStatus)
 // HostScanner - struct used to store information needed to scan a particular
 //  host
 type HostScanner struct {
-	Host     string
-	IP       net.IP
-	Range    PortRange
-	Gate     chan int
-	Timeout  time.Duration
-	scanners []scanner
+	// Host Address
+	Host string
+	// Host IP
+	IP net.IP
+	// Port range to scan
+	Range PortRange
+	// Throttle for overall concurrency
+	Gate chan int
+	// RTT Timout
+	Timeout time.Duration
+	// Use SYNScan instead of Connect Scan for TCP scan
+	SYNScan bool
 }
 
 // NewHostScanner -  Create a new scanner for a host
@@ -86,10 +92,7 @@ func NewHostScanner(host string, portRange PortRange) (*HostScanner, error) {
 		portRange.End = 65535
 	}
 
-	var scns []scanner
-	// Can attach mutliple types of scans later on, just use connect scan for now
-	scns = append(scns, newConnectScanner(ip[0]))
-	return &HostScanner{host, ip[0], portRange, make(chan int, 1), 5 * time.Second, scns}, nil
+	return &HostScanner{host, ip[0], portRange, make(chan int, 1), 5 * time.Second, false}, nil
 }
 
 /*
@@ -108,10 +111,20 @@ func (hs *HostScanner) setGate(g chan int) {
 Scan the ports for the current HostScanner
 handler - callback for each port scanned
 */
-func (hs *HostScanner) Scan(handler ScanResultHandler) {
+func (hs *HostScanner) Scan(handler ScanResultHandler) error {
 	var wg sync.WaitGroup
+	var scn scanner
+	var err error
+
+	if hs.SYNScan {
+		if scn, err = newSYNScanner(hs.IP); err != nil {
+			return err
+		}
+	} else {
+		scn = newConnectScanner(hs.IP)
+	}
+
 	wg.Add(hs.Range.End - hs.Range.Start + 1)
-	cs := newConnectScanner(hs.IP)
 	for p := hs.Range.Start; p <= hs.Range.End; p++ {
 		hs.Gate <- 1
 		go func(p int) {
@@ -119,7 +132,7 @@ func (hs *HostScanner) Scan(handler ScanResultHandler) {
 				<-hs.Gate
 				wg.Done()
 			}()
-			if status, err := cs.Scan(p, hs.Timeout); err != nil {
+			if status, err := scn.Scan(p, hs.Timeout); err != nil {
 				glog.Errorf("Error encountered while scanning %v:%v - %v, ignoring", hs.Host, p, err)
 			} else {
 				handler(&HostPortStatus{hs.Host, p, ConnectScan, status})
@@ -127,6 +140,8 @@ func (hs *HostScanner) Scan(handler ScanResultHandler) {
 		}(p)
 	}
 	wg.Wait()
+	scn.Close()
+	return nil
 }
 
 // ScanOpts - struct for aggregating differen scan options
@@ -137,6 +152,8 @@ type ScanOpts struct {
 	Timeout time.Duration
 	// Port Range to scan
 	Range PortRange
+	// use SYN Scan instead of ConnectScan
+	SYNScan bool
 }
 
 // ScanHosts - Perform scan on a list of hosts.
@@ -155,6 +172,7 @@ func ScanHosts(hosts []string, opts ScanOpts, handler ScanResultHandler) error {
 	for _, h := range hosts {
 		if hs, err := NewHostScanner(h, opts.Range); err == nil {
 			hs.Timeout = opts.Timeout
+			hs.SYNScan = opts.SYNScan
 			scanners = append(scanners, hs)
 		} else {
 			return err

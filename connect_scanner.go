@@ -37,9 +37,14 @@ func (ps PortStatus) String() string {
 
 // private interface for a scan job
 type scanner interface {
-	// duration is left in the Scan call so that we can potentially vary timeouts
+	// Scan - Tell the scanner to scan a particular port
+	//
+	// Note: duration is specified in the Scan method so that we can potentially vary timeouts
 	// algorithmically for retries later on
 	Scan(port int, timeout time.Duration) (PortStatus, error)
+
+	// Close the scanner
+	Close()
 }
 
 // private type for connect scan
@@ -48,7 +53,7 @@ type connectScanner struct {
 }
 
 // Create a new PortChecker
-func newConnectScanner(ip net.IP) *connectScanner {
+func newConnectScanner(ip net.IP) scanner {
 	return &connectScanner{ip}
 }
 
@@ -80,4 +85,8 @@ func (cs *connectScanner) Scan(port int, timeout time.Duration) (PortStatus, err
 	}
 	conn.Close()
 	return PSOpen, nil
+}
+
+func (cs *connectScanner) Close() {
+	//nothing to do
 }

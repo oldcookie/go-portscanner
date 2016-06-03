@@ -143,7 +143,7 @@ func TestSYNScanner(t *testing.T) {
 
 	for i, tc := range tests {
 		t.Logf("Test case %v: %v\n", i, tc)
-		var ss *synScanner
+		var ss scanner
 		var err error
 		var ps PortStatus
 

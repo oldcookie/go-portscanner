@@ -212,7 +212,6 @@ func (tpl *tcpPacketsListener) Listen() error {
 				case e.match(&tcp):
 					var clone layers.TCP
 					glog.Info("Match found!", tcp.SrcPort, addr.IP.String(), tcp.DstPort)
-					tpl.removePending(tcp.SrcPort, addr.IP.String(), tcp.DstPort)
 					clone = tcp // copy the packet first
 					e.res <- &clone
 				default:
@@ -284,6 +283,8 @@ func (tpl *tcpPacketsListener) WaitFor(lport layers.TCPPort, rIP net.IP, rport l
 	})
 	select {
 	case r := <-res:
+		e := tpl.removePending(lport, rIP.String(), rport)
+		e.timer.Stop()
 		return r
 	case <-expired:
 		glog.Infof("Timeout waiting for packet from %v:%v", rIP.String(), rport)
@@ -307,7 +308,7 @@ type listenReq struct {
 	scanner *synScanner
 }
 
-func newSYNScanner(ip net.IP) (*synScanner, error) {
+func newSYNScanner(ip net.IP) (scanner, error) {
 	s := &synScanner{
 		dst:     ip,
 		Retries: 3,
@@ -356,8 +357,10 @@ func (s *synScanner) Scan(port int, timeout time.Duration) (PortStatus, error) {
 	case res == nil:
 		return PSTimeout, nil
 	case res.SYN && res.ACK:
+		glog.Infof("Got ACK, %v:%v is OPEN\n", s.dst, rport)
 		return PSOpen, nil
 	case res.RST:
+		glog.Infof("Got RST, %v:%v is CLOSED\n", s.dst, rport)
 		return PSClose, nil
 	}
 	return PSError, nil
