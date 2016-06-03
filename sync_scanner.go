@@ -2,6 +2,7 @@ package portscanner
 
 import (
 	"fmt"
+	"math/rand"
 	"net"
 	"sync"
 	"time"
@@ -9,7 +10,6 @@ import (
 	"github.com/golang/glog"
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
-	"github.com/google/gopacket/routing"
 )
 
 // tplMatchFn - Function used to identify if a packet is a match.
@@ -32,6 +32,57 @@ type tcpPacketsListener struct {
 		sync.RWMutex
 		m map[string]map[uint32]*pendingEntry
 	}
+}
+
+type tplMap struct {
+	sync.RWMutex
+	m map[string]*tcpPacketsListener
+}
+
+var tplFactory struct {
+	once      sync.Once
+	listeners *tplMap
+}
+
+type tcpWritableListener interface {
+	Write(dstIP net.IP, dstPort layers.TCPPort, tcp *layers.TCP) error
+	WaitFor(lport layers.TCPPort, rIP net.IP, rport layers.TCPPort, timeout time.Duration, fn tplMatchFn) *layers.TCP
+}
+
+// Get an instance of TCP Listener for a particular IP version and Address
+//
+// TODO add tracking of the number of instances requested for TCP listener
+// and stop them if there are no more outstanding
+func getTCPListener(ipVer string, laddr *net.IPAddr) (tcpWritableListener, error) {
+	tplFactory.once.Do(func() {
+		// initialize the singleton
+		tplFactory.listeners = &tplMap{m: make(map[string]*tcpPacketsListener)}
+	})
+
+	key := ipVer + ":" + laddr.IP.String()
+	l := tplFactory.listeners
+
+	l.Lock()
+	defer l.Unlock()
+
+	if l.m[key] != nil {
+		return l.m[key], nil
+	}
+
+	var err error
+	if l.m[key], err = newTCPPacketsListener(laddr, ipVer); err == nil {
+		go func(tpl *tcpPacketsListener, key string) {
+			if err := tpl.Listen(); err != nil {
+				glog.Error("Unxpected error ready packet, listner quit.")
+				glog.Error(err.Error())
+			}
+			tplFactory.listeners.Lock()
+			defer tplFactory.listeners.Unlock()
+			delete(tplFactory.listeners.m, key)
+		}(l.m[key], key)
+		return l.m[key], nil
+	}
+	return nil, err
 }
 
 func newTCPPacketsListener(laddr *net.IPAddr, ipVer string) (*tcpPacketsListener, error) {
@@ -108,7 +159,7 @@ func (tpl *tcpPacketsListener) addPending(lport layers.TCPPort, rhost string, rp
 }
 
 // Start processing packets
-func (tpl *tcpPacketsListener) Start() error {
+func (tpl *tcpPacketsListener) Listen() error {
 	var tcp layers.TCP
 	glog.Info("Start reading TCP packets...")
 	data := make([]byte, 4096)
@@ -172,7 +223,7 @@ func (tpl *tcpPacketsListener) Start() error {
 	}
 }
 
-func (tpl *tcpPacketsListener) Stop() {
+func (tpl *tcpPacketsListener) Close() {
 	tpl.done <- true
 }
 
@@ -180,12 +231,14 @@ func (tpl *tcpPacketsListener) Write(dstIP net.IP, dstPort layers.TCPPort, tcp *
 	var ip gopacket.NetworkLayer
 	switch tpl.ipVer {
 	case "ip4":
+		glog.Infof("IPv4 Packet, local IP: %v, remove IP: %v\n", tpl.laddr.IP, dstIP)
 		ip = &layers.IPv4{
 			SrcIP:    tpl.laddr.IP,
 			DstIP:    dstIP,
 			Protocol: layers.IPProtocolTCP,
 		}
 	default:
+		glog.Infof("IPv6 Packet, local IP: %v, remove IP: %v\n", tpl.laddr.IP, dstIP)
 		ip = &layers.IPv6{
 			SrcIP:      tpl.laddr.IP,
 			DstIP:      dstIP,
@@ -240,10 +293,10 @@ func (tpl *tcpPacketsListener) WaitFor(lport layers.TCPPort, rIP net.IP, rport l
 
 // private type for SYN Scan
 type synScanner struct {
-	isIPv4   bool
+	ipVer    string
 	src, dst net.IP
-	laddr    net.IPAddr
-	srcPort  layers.TCPPort
+	laddr    *net.IPAddr
+	lport    layers.TCPPort
 	conn     *net.UDPConn
 
 	Retries int
@@ -254,33 +307,74 @@ type listenReq struct {
 	scanner *synScanner
 }
 
-func newSYNScanner(ip net.IP, router routing.Router) (*synScanner, error) {
+func newSYNScanner(ip net.IP) (*synScanner, error) {
 	s := &synScanner{
 		dst:     ip,
 		Retries: 3,
 		Timeout: 5 * time.Second,
-		isIPv4:  ip.To4() != nil,
+		ipVer:   "ip4",
+	}
+	if ip.To4() == nil {
+		s.ipVer = "ip6"
 	}
 
-	lIP, lPort, conn, err := getLocalIPPort(s.dst)
+	lIP, lport, conn, err := getLocalIPPort(s.dst)
 	if err != nil {
 		return nil, err
 	}
 
-	s.src, s.srcPort, s.conn = lIP, layers.TCPPort(lPort), conn
-	return s, nil
+	s.src, s.lport, s.conn = lIP, layers.TCPPort(lport), conn
+	if s.laddr, err = net.ResolveIPAddr(s.ipVer, s.src.String()); err == nil {
+		return s, nil
+	}
+	return nil, err
 }
 
 func (s *synScanner) Scan(port int, timeout time.Duration) (PortStatus, error) {
-	return 0, nil
+	l, err := getTCPListener(s.ipVer, s.laddr)
+	if err != nil {
+		return -1, err
+	}
+
+	seq := rand.Uint32()
+	rport := layers.TCPPort(port)
+	// Our TCP header
+	tcp := &layers.TCP{
+		SrcPort: s.lport,
+		DstPort: rport,
+		Seq:     seq,
+		SYN:     true,
+		Window:  14600,
+	}
+
+	if err := l.Write(s.dst, rport, tcp); err != nil {
+		return PSError, err
+	}
+
+	res := l.WaitFor(s.lport, s.dst, rport, timeout, matchSYNTestResps)
+	switch {
+	case res == nil:
+		return PSTimeout, nil
+	case res.SYN && res.ACK:
+		return PSOpen, nil
+	case res.RST:
+		return PSClose, nil
+	}
+	return PSError, nil
+}
+
+func (s *synScanner) Close() {
+	s.conn.Close()
 }
 
 // hack to get the local ip and port based on our destination ip
 // also returns the UDP connection so that the local IP an port is
 // allocated
 func getLocalIPPort(dst net.IP) (net.IP, int, *net.UDPConn, error) {
+	//local port doesn't really matter, just getting a routable address
 	serverAddr, err := net.ResolveUDPAddr("udp", net.JoinHostPort(dst.String(), "12345"))
 	if err != nil {
+		glog.Error("Error resolving address: " + err.Error())
 		return nil, -1, nil, err
 	}
 

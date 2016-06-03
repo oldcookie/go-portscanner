@@ -65,6 +65,8 @@ func TestConnectScan(t *testing.T) {
 	tsClosed := createTCPTestServer(ip)
 	tsClosed.Stop()
 
+	googleAddr, _ := net.ResolveIPAddr("ip", "google.com")
+
 	var portTests = []struct {
 		ip   string
 		port string
@@ -73,13 +75,15 @@ func TestConnectScan(t *testing.T) {
 		{ts.host, ts.port, PSOpen},
 		{tsClosed.host, tsClosed.port, PSClose},
 		{unroutableIP, "80", PSTimeout},
+		{googleAddr.IP.String(), "80", PSOpen},
+		{googleAddr.IP.String(), "443", PSOpen},
 	}
 
 	for i, tc := range portTests {
 		t.Logf("Test case %v: %v", i, tc)
 		cs := newConnectScanner(net.ParseIP(tc.ip))
 		p, _ := strconv.Atoi(tc.port)
-		if ps, err := cs.Scan(p, 500*time.Millisecond); err != nil {
+		if ps, err := cs.Scan(p, 2*time.Second); err != nil {
 			t.Errorf("TestCase %v failed, error: ", err)
 		} else if tc.out != ps {
 			t.Errorf("Result for %v doesn't match, expected %v, got %v", i, tc.out, ps)

@@ -33,12 +33,6 @@ func TestIPPacketListener(t *testing.T) {
 	tsClosed.Stop()
 	closedPort, _ := strconv.Atoi(tsClosed.port)
 
-	/*
-		ts6 := createTCPTestServer("::1")
-		defer ts6.Stop()
-		ts6Port, _ := strconv.Atoi(ts6.port)
-	*/
-
 	var tests = []struct {
 		ipv      string
 		addr     string
@@ -87,7 +81,7 @@ func TestIPPacketListener(t *testing.T) {
 		}
 
 		go func(tpl *tcpPacketsListener) {
-			err := tpl.Start()
+			err := tpl.Listen()
 			if err != nil {
 				t.Error(err)
 			}
@@ -96,7 +90,7 @@ func TestIPPacketListener(t *testing.T) {
 		go func(i int, tpl *tcpPacketsListener, lport layers.TCPPort, dstIP net.IP, dstport layers.TCPPort, expected func(*layers.TCP) bool) {
 			defer func() {
 				wg.Done()
-				tpl.Stop()
+				tpl.Close()
 			}()
 			res := tpl.WaitFor(lport, dstIP, dstport, 5*time.Second, matchSYNTestResps)
 			if !expected(res) {
@@ -111,4 +105,58 @@ func TestIPPacketListener(t *testing.T) {
 		}
 	}
 	wg.Wait()
+}
+
+func TestSYNScanner(t *testing.T) {
+	ipnet, err := myIPNet()
+	if err != nil {
+		t.Error(err)
+		return
+	}
+
+	ip := ipnet.IP.String()
+	t.Logf("Test ip address: %v", ip)
+
+	ts := createTCPTestServer(ip)
+	defer ts.Stop()
+
+	tsClosed := createTCPTestServer(ip)
+	tsClosed.Stop()
+
+	googleAddr, err := net.ResolveIPAddr("ip", "google.com")
+	if err != nil {
+		t.Error(err)
+		return
+	}
+
+	var tests = []struct {
+		ip   string
+		port string
+		out  PortStatus
+	}{
+		{ts.host, ts.port, PSOpen},
+		{tsClosed.host, tsClosed.port, PSClose},
+		{unroutableIP, "80", PSTimeout},
+		{googleAddr.IP.String(), "80", PSOpen},
+		{googleAddr.IP.String(), "443", PSOpen},
+	}
+
+	for i, tc := range tests {
+		t.Logf("Test case %v: %v\n", i, tc)
+		var ss *synScanner
+		var err error
+		var ps PortStatus
+
+		if ss, err = newSYNScanner(net.ParseIP(tc.ip)); err != nil {
+			t.Error(err)
+			continue
+		}
+		p, _ := strconv.Atoi(tc.port)
+		if ps, err = ss.Scan(p, 2*time.Second); err != nil {
+			t.Errorf("TestCase %v failed, error: ", err)
+		} else if tc.out != ps {
+			t.Errorf("Result for %v doesn't match, expected %v, got %v", i, tc.out, ps)
+		}
+
+	}
 }
