@@ -46,7 +46,7 @@ var tplFactory struct {
 
 type tcpWritableListener interface {
 	Write(dstIP net.IP, dstPort layers.TCPPort, tcp *layers.TCP) error
-	WaitFor(lport layers.TCPPort, rIP net.IP, rport layers.TCPPort, timeout time.Duration, fn tplMatchFn) *layers.TCP
+	NotifyOn(lport layers.TCPPort, rIP net.IP, rport layers.TCPPort, timeout time.Duration, fn tplMatchFn) <-chan *layers.TCP
 }
 
 // Get an instance of TCP Listener for a particular IP version and Address
@@ -75,6 +75,7 @@ func getTCPListener(ipVer string, laddr *net.IPAddr) (tcpWritableListener, error
 			if err := tpl.Listen(); err != nil {
 				glog.Error("Unxpected error ready packet, listner quit.")
 				glog.Error(err.Error())
+				return
 			}
 			tplFactory.listeners.Lock()
 			defer tplFactory.listeners.Unlock()
@@ -134,17 +135,20 @@ func (tpl *tcpPacketsListener) removePending(lport layers.TCPPort, rhost string,
 	defer p.Unlock()
 
 	glog.Infof("removing %v, %d, %d, %v\n", rhost, lport, rport, pk)
-	res := p.m[rhost][pk]
+	e := p.m[rhost][pk]
 	if delete(p.m[rhost], pk); len(p.m[rhost]) == 0 {
 		// remove the entry if no more requests for host
 		glog.Infof("No more entries for %v, removing submap from table\n", rhost)
 		delete(p.m, rhost)
 	}
-	return res
+	e.timer.Stop()
+	return e
 }
 
 // Add a pending request
-func (tpl *tcpPacketsListener) addPending(lport layers.TCPPort, rhost string, rport layers.TCPPort, entry *pendingEntry) {
+func (tpl *tcpPacketsListener) addPending(lport layers.TCPPort, rhost string,
+	rport layers.TCPPort, match tplMatchFn, timeout time.Duration) <-chan *layers.TCP {
+
 	p := tpl.pending
 	pk := portKey(lport, rport)
 
@@ -155,7 +159,21 @@ func (tpl *tcpPacketsListener) addPending(lport layers.TCPPort, rhost string, rp
 	if p.m[rhost] == nil {
 		p.m[rhost] = make(map[uint32]*pendingEntry)
 	}
-	p.m[rhost][pk] = entry
+
+	res := make(chan *layers.TCP)
+
+	// take care of timeout
+	t := time.AfterFunc(timeout, func() {
+		tpl.removePending(lport, rhost, rport)
+		res <- nil
+	})
+
+	p.m[rhost][pk] = &pendingEntry{
+		timer: t,
+		match: match,
+		res:   res,
+	}
+	return res
 }
 
 // Start processing packets
@@ -174,7 +192,7 @@ func (tpl *tcpPacketsListener) Listen() error {
 			// keep processing
 		}
 
-		if err := tpl.conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		if err := tpl.conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
 			glog.Error("Error setting read deadline", err)
 			return err
 		}
@@ -196,7 +214,6 @@ func (tpl *tcpPacketsListener) Listen() error {
 		}
 
 		if tpl.isHostPending(addr.IP.String()) {
-			glog.Infof("Incoming packet from pending host: %v\n", addr.IP)
 			// Decode the packet
 			decoded := make([]gopacket.LayerType, 0, 2)
 			if err := parser.DecodeLayers(data[:n], &decoded); err != nil || len(decoded) == 0 {
@@ -210,6 +227,7 @@ func (tpl *tcpPacketsListener) Listen() error {
 			if e := tpl.lookupPending(tcp.DstPort, addr.IP.String(), tcp.SrcPort); e != nil {
 				switch {
 				case e.match(&tcp):
+					tpl.removePending(tcp.DstPort, addr.IP.String(), tcp.SrcPort)
 					var clone layers.TCP
 					glog.Info("Match found!", tcp.SrcPort, addr.IP.String(), tcp.DstPort)
 					clone = tcp // copy the packet first
@@ -217,6 +235,8 @@ func (tpl *tcpPacketsListener) Listen() error {
 				default:
 					glog.Info("Call to Match Function failed", tcp)
 				}
+			} else {
+				glog.Error("Incoming packet matches host, but no pending\n", tcp)
 			}
 		}
 	}
@@ -226,6 +246,7 @@ func (tpl *tcpPacketsListener) Close() {
 	tpl.done <- true
 }
 
+// Write - Write a TCP packet
 func (tpl *tcpPacketsListener) Write(dstIP net.IP, dstPort layers.TCPPort, tcp *layers.TCP) error {
 	var ip gopacket.NetworkLayer
 	switch tpl.ipVer {
@@ -266,30 +287,10 @@ func (tpl *tcpPacketsListener) Write(dstIP net.IP, dstPort layers.TCPPort, tcp *
 // rIP - remote IP
 // rport - remote port
 // fn - matching function
-func (tpl *tcpPacketsListener) WaitFor(lport layers.TCPPort, rIP net.IP, rport layers.TCPPort,
-	timeout time.Duration, fn tplMatchFn) *layers.TCP {
-	res := make(chan *layers.TCP)
-	expired := make(chan bool)
+func (tpl *tcpPacketsListener) NotifyOn(lport layers.TCPPort, rIP net.IP, rport layers.TCPPort,
+	timeout time.Duration, fn tplMatchFn) <-chan *layers.TCP {
 
-	// take care of timeout
-	t := time.AfterFunc(timeout, func() {
-		tpl.removePending(lport, rIP.String(), rport)
-		expired <- true
-	})
-	tpl.addPending(lport, rIP.String(), rport, &pendingEntry{
-		timer: t,
-		match: fn,
-		res:   res,
-	})
-	select {
-	case r := <-res:
-		e := tpl.removePending(lport, rIP.String(), rport)
-		e.timer.Stop()
-		return r
-	case <-expired:
-		glog.Infof("Timeout waiting for packet from %v:%v", rIP.String(), rport)
-		return nil
-	}
+	return tpl.addPending(lport, rIP.String(), rport, fn, timeout)
 }
 
 // private type for SYN Scan
@@ -312,7 +313,7 @@ func newSYNScanner(ip net.IP) (scanner, error) {
 	s := &synScanner{
 		dst:     ip,
 		Retries: 3,
-		Timeout: 5 * time.Second,
+		Timeout: 3 * time.Second,
 		ipVer:   "ip4",
 	}
 	if ip.To4() == nil {
@@ -348,22 +349,25 @@ func (s *synScanner) Scan(port int, timeout time.Duration) (PortStatus, error) {
 		Window:  14600,
 	}
 
+	res := l.NotifyOn(s.lport, s.dst, rport, timeout, matchSYNTestResps)
 	if err := l.Write(s.dst, rport, tcp); err != nil {
 		return PSError, err
 	}
 
-	res := l.WaitFor(s.lport, s.dst, rport, timeout, matchSYNTestResps)
+	r := <-res
+	return mapTCPAckToPortStatus(r), nil
+}
+
+func mapTCPAckToPortStatus(t *layers.TCP) PortStatus {
 	switch {
-	case res == nil:
-		return PSTimeout, nil
-	case res.SYN && res.ACK:
-		glog.Infof("Got ACK, %v:%v is OPEN\n", s.dst, rport)
-		return PSOpen, nil
-	case res.RST:
-		glog.Infof("Got RST, %v:%v is CLOSED\n", s.dst, rport)
-		return PSClose, nil
+	case t == nil:
+		return PSTimeout
+	case t.SYN && t.ACK:
+		return PSOpen
+	case t.RST:
+		return PSClose
 	}
-	return PSError, nil
+	return PSError
 }
 
 func (s *synScanner) Close() {
