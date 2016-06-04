@@ -92,8 +92,9 @@ func TestIPPacketListener(t *testing.T) {
 				wg.Done()
 				tpl.Close()
 			}()
-			res := tpl.WaitFor(lport, dstIP, dstport, 5*time.Second, matchSYNTestResps)
-			if !expected(res) {
+
+			res := tpl.NotifyOn(lport, dstIP, dstport, 5*time.Second, matchSYNTestResps)
+			if !expected(<-res) {
 				t.Errorf("Testcase %v: %v, Unexpected Result %v\n", i, tc, res)
 				return
 			}
@@ -143,7 +144,7 @@ func TestSYNScanner(t *testing.T) {
 
 	for i, tc := range tests {
 		t.Logf("Test case %v: %v\n", i, tc)
-		var ss *synScanner
+		var ss scanner
 		var err error
 		var ps PortStatus
 
