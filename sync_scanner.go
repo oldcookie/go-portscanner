@@ -1,6 +1,7 @@
 package portscanner
 
 import (
+	"encoding/binary"
 	"fmt"
 	"math/rand"
 	"net"
@@ -12,21 +13,27 @@ import (
 	"github.com/google/gopacket/layers"
 )
 
+const (
+	ip4 = "ip4"
+	ip6 = "ip6"
+)
+
 // tplMatchFn - Function used to identify if a packet is a match.
 // Should return true on matches
 type tplMatchFn func(*layers.TCP) bool
 
 type pendingEntry struct {
 	timer *time.Timer
-	res   chan<- *layers.TCP
+	res   chan<- PortStatus
 	match tplMatchFn
 }
 
 type tcpPacketsListener struct {
-	ipVer string
-	laddr *net.IPAddr
-	conn  *net.IPConn
-	done  chan bool
+	ipVer    string
+	laddr    *net.IPAddr
+	conn     *net.IPConn
+	icmpConn *net.IPConn
+	done     chan bool
 
 	pending struct {
 		sync.RWMutex
@@ -46,7 +53,7 @@ var tplFactory struct {
 
 type tcpWritableListener interface {
 	Write(dstIP net.IP, dstPort layers.TCPPort, tcp *layers.TCP) error
-	NotifyOn(lport layers.TCPPort, rIP net.IP, rport layers.TCPPort, timeout time.Duration, fn tplMatchFn) <-chan *layers.TCP
+	NotifyOn(lport layers.TCPPort, rIP net.IP, rport layers.TCPPort, timeout time.Duration, fn tplMatchFn) <-chan PortStatus
 }
 
 // Get an instance of TCP Listener for a particular IP version and Address
@@ -91,9 +98,17 @@ func newTCPPacketsListener(laddr *net.IPAddr, ipVer string) (*tcpPacketsListener
 	tpl.laddr = laddr
 	tpl.pending.m = make(map[string]map[uint32]*pendingEntry)
 	switch ipVer {
-	case "ip4", "ip6":
+	case ip4, ip6:
 		var err error
 		tpl.conn, err = net.ListenIP(ipVer+":tcp", laddr)
+		if err != nil {
+			return nil, err
+		}
+		if ipVer == ip6 {
+			tpl.icmpConn, err = net.ListenIP("ip6:ipv6-icmp", laddr)
+		} else {
+			tpl.icmpConn, err = net.ListenIP("ip4:icmp", laddr)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -105,7 +120,7 @@ func newTCPPacketsListener(laddr *net.IPAddr, ipVer string) (*tcpPacketsListener
 
 // Check if there are pending requests for a host
 func (tpl *tcpPacketsListener) isHostPending(host string) bool {
-	p := tpl.pending
+	p := &tpl.pending
 	p.RLock()
 	defer p.RUnlock()
 	return p.m[host] != nil
@@ -118,7 +133,7 @@ func portKey(lport, rport layers.TCPPort) uint32 {
 
 func (tpl *tcpPacketsListener) lookupPending(lport layers.TCPPort, rhost string, rport layers.TCPPort) *pendingEntry {
 	pk := portKey(lport, rport)
-	p := tpl.pending
+	p := &tpl.pending
 	p.RLock()
 	defer p.RUnlock()
 
@@ -129,7 +144,7 @@ func (tpl *tcpPacketsListener) lookupPending(lport layers.TCPPort, rhost string,
 // Remove a pending request
 func (tpl *tcpPacketsListener) removePending(lport layers.TCPPort, rhost string, rport layers.TCPPort) *pendingEntry {
 	pk := portKey(lport, rport)
-	p := tpl.pending
+	p := &tpl.pending
 
 	p.Lock()
 	defer p.Unlock()
@@ -141,15 +156,17 @@ func (tpl *tcpPacketsListener) removePending(lport layers.TCPPort, rhost string,
 		glog.Infof("No more entries for %v, removing submap from table\n", rhost)
 		delete(p.m, rhost)
 	}
-	e.timer.Stop()
+	if e != nil {
+		e.timer.Stop()
+	}
 	return e
 }
 
 // Add a pending request
 func (tpl *tcpPacketsListener) addPending(lport layers.TCPPort, rhost string,
-	rport layers.TCPPort, match tplMatchFn, timeout time.Duration) <-chan *layers.TCP {
+	rport layers.TCPPort, match tplMatchFn, timeout time.Duration) <-chan PortStatus {
 
-	p := tpl.pending
+	p := &tpl.pending
 	pk := portKey(lport, rport)
 
 	p.Lock()
@@ -160,12 +177,11 @@ func (tpl *tcpPacketsListener) addPending(lport layers.TCPPort, rhost string,
 		p.m[rhost] = make(map[uint32]*pendingEntry)
 	}
 
-	res := make(chan *layers.TCP)
-
+	res := make(chan PortStatus)
 	// take care of timeout
 	t := time.AfterFunc(timeout, func() {
 		tpl.removePending(lport, rhost, rport)
-		res <- nil
+		res <- PSTimeout
 	})
 
 	p.m[rhost][pk] = &pendingEntry{
@@ -176,23 +192,111 @@ func (tpl *tcpPacketsListener) addPending(lport layers.TCPPort, rhost string,
 	return res
 }
 
+func (tpl *tcpPacketsListener) ListenForUnreachable() chan<- bool {
+	var icmp layers.ICMPv4
+	var icmp6 layers.ICMPv6
+	var payload gopacket.Payload
+	var parser *gopacket.DecodingLayerParser
+
+	done := make(chan bool)
+	data := make([]byte, 4096)
+	if tpl.ipVer == ip6 {
+		parser = gopacket.NewDecodingLayerParser(layers.LayerTypeICMPv6, &icmp6, &payload)
+	} else {
+		parser = gopacket.NewDecodingLayerParser(layers.LayerTypeICMPv4, &icmp, &payload)
+	}
+
+	decoded := make([]gopacket.LayerType, 0, 2)
+	go func() {
+		for {
+			select {
+			case <-done:
+				glog.Info("Stop signal received, stopping...")
+				return
+			default:
+				// keep processing
+			}
+
+			n, _, err := tpl.icmpConn.ReadFromIP(data)
+			if err != nil {
+				nwErr, ok := err.(net.Error)
+				switch {
+				case !ok:
+					glog.Error("Unexpected(non-network) error occured", err)
+					return
+				case (nwErr.Timeout() || nwErr.Temporary()):
+					// keep going
+					continue
+				default:
+					glog.Error("error reading packet: ", err)
+					return
+				}
+			}
+
+			// Decode the packet
+			if err := parser.DecodeLayers(data[:n], &decoded); err != nil || len(decoded) == 0 {
+				glog.Error("Failed to code packet", data[:n])
+				// not a TCP packet
+				continue
+			}
+
+			glog.Infof("Decoded len %v\n", len(decoded))
+			for _, d := range decoded {
+				switch d {
+				case layers.LayerTypeICMPv4:
+					glog.Infof("ICMPv4 layer %v\n", icmp)
+					glog.Infof("ICMPv4 TypeCode %v\n", icmp.TypeCode.Type())
+					if icmp.TypeCode.Type() == layers.ICMPv4TypeDestinationUnreachable {
+						rhost := net.IP(payload.Payload()[16:20])
+						lport := layers.TCPPort(binary.BigEndian.Uint16(payload.Payload()[20:22]))
+						rport := layers.TCPPort(binary.BigEndian.Uint16(payload.Payload()[22:24]))
+						glog.Infof("Unroutable packet received IPV4 %v:%v, lport %v\n", rhost, rport, lport)
+						if e := tpl.removePending(lport, rhost.String(), rport); e != nil {
+							e.res <- PSUnreachable
+						}
+					}
+				case layers.LayerTypeICMPv6:
+					glog.Infof("ICMPv6 layer %v\n", icmp6)
+					glog.Infof("ICMPv6 TypeCode %v\n", icmp6.TypeCode.Type())
+					if icmp6.TypeCode.Type() == layers.ICMPv6TypeDestinationUnreachable {
+						glog.Infof("Unroutable ICMPV6 payload %v\n", payload.Payload())
+						rhost := net.IP(payload.Payload()[24:40])
+						lport := layers.TCPPort(binary.BigEndian.Uint16(payload.Payload()[40:42]))
+						rport := layers.TCPPort(binary.BigEndian.Uint16(payload.Payload()[42:44]))
+						glog.Infof("Unroutable packet received IPV6 %v:%v, lport %v\n", rhost, rport, lport)
+						if e := tpl.removePending(lport, rhost.String(), rport); e != nil {
+							e.res <- PSUnreachable
+						}
+					}
+				}
+			}
+		}
+	}()
+	return done
+}
+
 // Start processing packets
 func (tpl *tcpPacketsListener) Listen() error {
+	stopUnreachable := tpl.ListenForUnreachable()
+
 	var tcp layers.TCP
 	glog.Info("Start reading TCP packets...")
 	data := make([]byte, 4096)
 	parser := gopacket.NewDecodingLayerParser(layers.LayerTypeTCP, &tcp)
+
+	decoded := make([]gopacket.LayerType, 0, 2)
 	for {
 		// check for stop signal
 		select {
 		case <-tpl.done:
+			stopUnreachable <- true
 			glog.Info("Stop signal received, stopping...")
 			return nil
 		default:
 			// keep processing
 		}
 
-		if err := tpl.conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		if err := tpl.conn.SetReadDeadline(time.Now().Add(60 * time.Second)); err != nil {
 			glog.Error("Error setting read deadline", err)
 			return err
 		}
@@ -215,7 +319,6 @@ func (tpl *tcpPacketsListener) Listen() error {
 
 		if tpl.isHostPending(addr.IP.String()) {
 			// Decode the packet
-			decoded := make([]gopacket.LayerType, 0, 2)
 			if err := parser.DecodeLayers(data[:n], &decoded); err != nil || len(decoded) == 0 {
 				glog.Error("Failed to code packet", data[:n])
 				// not a TCP packet
@@ -228,15 +331,13 @@ func (tpl *tcpPacketsListener) Listen() error {
 				switch {
 				case e.match(&tcp):
 					tpl.removePending(tcp.DstPort, addr.IP.String(), tcp.SrcPort)
-					var clone layers.TCP
 					glog.Info("Match found!", tcp.SrcPort, addr.IP.String(), tcp.DstPort)
-					clone = tcp // copy the packet first
-					e.res <- &clone
+					e.res <- mapTCPAckToPortStatus(&tcp)
 				default:
 					glog.Info("Call to Match Function failed", tcp)
 				}
 			} else {
-				glog.Error("Incoming packet matches host, but no pending\n", tcp)
+				glog.Info("Incoming packet matches host, but no pending\n", tcp)
 			}
 		}
 	}
@@ -288,7 +389,7 @@ func (tpl *tcpPacketsListener) Write(dstIP net.IP, dstPort layers.TCPPort, tcp *
 // rport - remote port
 // fn - matching function
 func (tpl *tcpPacketsListener) NotifyOn(lport layers.TCPPort, rIP net.IP, rport layers.TCPPort,
-	timeout time.Duration, fn tplMatchFn) <-chan *layers.TCP {
+	timeout time.Duration, fn tplMatchFn) <-chan PortStatus {
 
 	return tpl.addPending(lport, rIP.String(), rport, fn, timeout)
 }
@@ -355,7 +456,7 @@ func (s *synScanner) Scan(port int, timeout time.Duration) (PortStatus, error) {
 	}
 
 	r := <-res
-	return mapTCPAckToPortStatus(r), nil
+	return r, nil
 }
 
 func mapTCPAckToPortStatus(t *layers.TCP) PortStatus {

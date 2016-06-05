@@ -11,18 +11,6 @@ import (
 	"github.com/google/gopacket/layers"
 )
 
-func expectNil(tcp *layers.TCP) bool {
-	return tcp == nil
-}
-
-func expectSYNACK(tcp *layers.TCP) bool {
-	return tcp != nil && tcp.SYN && tcp.ACK
-}
-
-func fail(*layers.TCP) bool {
-	return false
-}
-
 func TestIPPacketListener(t *testing.T) {
 	ipnet, err := myIPNet()
 	if err != nil {
@@ -37,12 +25,12 @@ func TestIPPacketListener(t *testing.T) {
 		ipv      string
 		addr     string
 		port     layers.TCPPort
-		expected func(*layers.TCP) bool
+		expected PortStatus
 	}{
-		{"ip4", tsClosed.host, layers.TCPPort(closedPort), expectNil},
-		{"ip4", "google.com", 80, expectSYNACK}, // Sorry google...
+		{"ip4", tsClosed.host, layers.TCPPort(closedPort), PSTimeout},
+		{"ip4", "google.com", 80, PSOpen}, // Sorry google...
 		//		{"ip6", "google.com", 80, expectSYNACK},
-		{"ip4", unroutableIP, 80, expectNil},
+		{"ip4", unroutableIP, 80, PSTimeout},
 		// TODO need to figure out more test cases that works
 	}
 
@@ -87,14 +75,14 @@ func TestIPPacketListener(t *testing.T) {
 			}
 		}(tpl)
 
-		go func(i int, tpl *tcpPacketsListener, lport layers.TCPPort, dstIP net.IP, dstport layers.TCPPort, expected func(*layers.TCP) bool) {
+		go func(i int, tpl *tcpPacketsListener, lport layers.TCPPort, dstIP net.IP, dstport layers.TCPPort, expected PortStatus) {
 			defer func() {
 				wg.Done()
 				tpl.Close()
 			}()
 
 			res := tpl.NotifyOn(lport, dstIP, dstport, 5*time.Second, matchSYNTestResps)
-			if !expected(<-res) {
+			if expected != <-res {
 				t.Errorf("Testcase %v: %v, Unexpected Result %v\n", i, tc, res)
 				return
 			}

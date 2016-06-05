@@ -18,6 +18,8 @@ const (
 	PSClose
 	// PSTimeout - Port timed out
 	PSTimeout
+	// PSUnreachable - Host/address unreachable
+	PSUnreachable
 	// PSError - Other errors when trying connect
 	PSError
 )
@@ -30,6 +32,8 @@ func (ps PortStatus) String() string {
 		return "Closed"
 	case PSTimeout:
 		return "Timed Out"
+	case PSUnreachable:
+		return "Unreachable"
 	default:
 		return "Error"
 	}

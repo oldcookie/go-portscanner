@@ -7,6 +7,7 @@ import (
 	"io/ioutil"
 	"log"
 	"os"
+	"runtime/pprof"
 	"sort"
 	"strconv"
 	"strings"
@@ -51,7 +52,7 @@ func aggregateOutput(ch chan *portscanner.HostPortStatus, done chan bool, portSe
 		}
 
 		switch hps.Status {
-		case portscanner.PSClose, portscanner.PSTimeout:
+		case portscanner.PSClose, portscanner.PSTimeout, portscanner.PSUnreachable:
 			// ignoring anything that's closed, or timedout
 			continue
 		default:
@@ -107,6 +108,8 @@ func main() {
 	go func() {
 		log.Println(http.ListenAndServe("localhost:6060", nil))
 	}()
+	var memprofile = flag.String("memprofile", "", "write memory profile to this file")
+
 	// flags definition
 	flag.BoolVar(&opts.SYNScan, "SYN", false, "Use SYN Scan instead of Connect scan for TCP check.(Super user only)")
 	flag.IntVar(&opts.Concurrency, "concurrency", 25, "Max number of concurrent requests")
@@ -168,6 +171,14 @@ func main() {
 	close(resultsCh)
 	<-done
 
+	if *memprofile != "" {
+		f, err := os.Create(*memprofile)
+		if err != nil {
+			log.Fatal(err)
+		}
+		pprof.WriteHeapProfile(f)
+		f.Close()
+	}
 	elapsed := time.Since(start)
 	fmt.Printf("%s took %s\n", os.Args[0], elapsed)
 
