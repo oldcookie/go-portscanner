@@ -104,6 +104,7 @@ func newTCPPacketsListener(laddr *net.IPAddr, ipVer string) (*tcpPacketsListener
 		if err != nil {
 			return nil, err
 		}
+		tpl.conn.SetWriteBuffer(131072)
 		if ipVer == ip6 {
 			tpl.icmpConn, err = net.ListenIP("ip6:ipv6-icmp", laddr)
 		} else {
@@ -378,11 +379,7 @@ func (tpl *tcpPacketsListener) Write(dstIP net.IP, dstPort layers.TCPPort, tcp *
 		return err
 	}
 
-	var conn *net.IPConn
-	var err error
-	if conn, err = net.DialIP(tpl.ipVer, tpl.laddr, &net.IPAddr{IP: dstIP}); err == nil {
-		_, err = conn.WriteTo(buf.Bytes(), &net.IPAddr{IP: dstIP})
-	}
+	_, err := tpl.conn.WriteTo(buf.Bytes(), &net.IPAddr{IP: dstIP})
 	return err
 }
 
