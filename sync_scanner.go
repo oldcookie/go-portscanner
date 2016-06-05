@@ -378,7 +378,11 @@ func (tpl *tcpPacketsListener) Write(dstIP net.IP, dstPort layers.TCPPort, tcp *
 		return err
 	}
 
-	_, err := tpl.conn.WriteTo(buf.Bytes(), &net.IPAddr{IP: dstIP})
+	var conn *net.IPConn
+	var err error
+	if conn, err = net.DialIP(tpl.ipVer, tpl.laddr, &net.IPAddr{IP: dstIP}); err == nil {
+		_, err = conn.WriteTo(buf.Bytes(), &net.IPAddr{IP: dstIP})
+	}
 	return err
 }
 
@@ -456,6 +460,10 @@ func (s *synScanner) Scan(port int, timeout time.Duration) (PortStatus, error) {
 	}
 
 	r := <-res
+
+	tcp.Seq++
+	tcp.SYN, tcp.RST = false, true
+	_ = l.Write(s.dst, rport, tcp)
 	return r, nil
 }
 
